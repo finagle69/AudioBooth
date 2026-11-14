@@ -1,0 +1,58 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      org_identifier:
+        description: "Bundle ID prefix (app becomes <prefix>.AudioBS)"
+        default: "com.finagle69"
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Apply Bluetooth timeline patch
+        run: git apply --ignore-whitespace --verbose patches/bluetooth-timeline.patch
+
+      - name: Archive (unsigned, iPhone app only)
+        run: |
+          xcodebuild archive \
+            -project AudioBooth/AudioBooth.xcodeproj \
+            -scheme AudioBooth \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AudioBooth.xcarchive" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ORG_IDENTIFIER="${{ inputs.org_identifier }}" \
+            SUPPORTS_MACCATALYST=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) CONTRIBUTOR_BUILD'
+
+      - name: Package IPA (strip Watch app and widget extensions)
+        run: |
+          APP=$(find "$RUNNER_TEMP/AudioBooth.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+          echo "Found app: $APP"
+          rm -rf "$APP/Watch" "$APP/PlugIns"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/AudioBooth-BT.ipa" Payload)
+          ls -lh "$GITHUB_WORKSPACE/AudioBooth-BT.ipa"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AudioBooth-BT-ipa
+          path: AudioBooth-BT.ipa
+          if-no-files-found: error
