@@ -14,10 +14,10 @@ index 8080ce1..f6a36fe 100644
        }
      }
 diff --git a/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift b/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift
-index 5b618a4..fe5df43 100644
+index 5b618a4..bf58c02 100644
 --- a/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift
 +++ b/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift
-@@ -53,6 +53,33 @@ struct LockScreenPreferencesView: View {
+@@ -53,6 +53,54 @@ struct LockScreenPreferencesView: View {
          Text("Appearance")
        }
  
@@ -27,7 +27,7 @@ index 5b618a4..fe5df43 100644
 +            systemImage: "car.fill",
 +            tint: .teal,
 +            title: "Full Book Timeline on Bluetooth",
-+            subtitle: "Car and Bluetooth displays show whole-book time. Lock screen is unchanged."
++            subtitle: "Car displays show whole-book time. The lock screen follows while connected to the car."
 +          )
 +        }
 +        .listRowBackground(theme.colors.background.card)
@@ -41,27 +41,48 @@ index 5b618a4..fe5df43 100644
 +          )
 +        }
 +        .listRowBackground(theme.colors.background.card)
++
++        VStack(alignment: .leading, spacing: 8) {
++          Text("Car Bluetooth Name")
++            .font(.subheadline)
++            .fontWeight(.medium)
++
++          TextField("e.g. Tesla", text: $preferences.bluetoothCarDeviceName)
++            .textInputAutocapitalization(.never)
++            .autocorrectionDisabled()
++
++          Button("Use Current Bluetooth Device") {
++            if let name = NowPlayingManager.currentBluetoothOutputName {
++              preferences.bluetoothCarDeviceName = name
++            }
++          }
++          .font(.footnote)
++          .buttonStyle(.borderless)
++        }
++        .listRowBackground(theme.colors.background.card)
 +      } header: {
 +        Text("Bluetooth / Car")
 +      } footer: {
-+        Text("Applies to any connected Bluetooth audio device, including headphones.")
-+          .font(.caption)
++        Text(
++          "Only Bluetooth devices whose name contains this text use the options above. Leave empty to apply to every Bluetooth device, including headphones. Connect to your car, then tap the button to fill in its name."
++        )
++        .font(.caption)
 +      }
 +
        Section {
          Toggle(isOn: $preferences.lockScreenAllowPlaybackPositionChange) {
            PreferenceRow(
 diff --git a/AudioBooth/AudioBooth/Services/NowPlayingManager.swift b/AudioBooth/AudioBooth/Services/NowPlayingManager.swift
-index c40ca7c..e5c77c8 100644
+index c40ca7c..55e8323 100644
 --- a/AudioBooth/AudioBooth/Services/NowPlayingManager.swift
 +++ b/AudioBooth/AudioBooth/Services/NowPlayingManager.swift
-@@ -74,6 +74,30 @@ final class NowPlayingManager {
+@@ -74,6 +74,47 @@ final class NowPlayingManager {
      }
    }
  
-+  /// True when the current audio output is a Bluetooth device (car stereo, headphones, speaker).
-+  static var isBluetoothOutputActive: Bool {
-+    AVAudioSession.sharedInstance().currentRoute.outputs.contains { output in
++  /// Bluetooth outputs in the current audio route (car stereo, headphones, speaker).
++  static var bluetoothOutputs: [AVAudioSessionPortDescription] {
++    AVAudioSession.sharedInstance().currentRoute.outputs.filter { output in
 +      switch output.portType {
 +      case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE:
 +        return true
@@ -71,22 +92,39 @@ index c40ca7c..e5c77c8 100644
 +    }
 +  }
 +
++  /// Name of the Bluetooth device currently playing audio, if any.
++  static var currentBluetoothOutputName: String? {
++    bluetoothOutputs.first?.portName
++  }
++
++  /// True when audio is playing to a Bluetooth device that counts as "the car":
++  /// any Bluetooth device if no car name is set, otherwise one whose name contains it.
++  static func isCarOutputActive(_ preferences: UserPreferences = .shared) -> Bool {
++    let outputs = bluetoothOutputs
++    guard !outputs.isEmpty else { return false }
++
++    let filter = preferences.bluetoothCarDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
++    guard !filter.isEmpty else { return true }
++
++    return outputs.contains { $0.portName.localizedCaseInsensitiveContains(filter) }
++  }
++
 +  /// Whether the system Now Playing info (lock screen, Control Center, Bluetooth/car displays)
 +  /// should describe the whole book rather than the current chapter.
 +  static func publishesFullBookTimeline(_ preferences: UserPreferences = .shared) -> Bool {
 +    if preferences.showFullBookDuration { return true }
-+    return preferences.bluetoothUsesFullBookTimeline && isBluetoothOutputActive
++    return preferences.bluetoothUsesFullBookTimeline && isCarOutputActive(preferences)
 +  }
 +
 +  /// Whether the "time remaining" suffix should be left off the Now Playing title.
 +  static func hidesRemainingInTitle(_ preferences: UserPreferences = .shared) -> Bool {
-+    preferences.bluetoothHidesRemainingInTitle && isBluetoothOutputActive
++    preferences.bluetoothHidesRemainingInTitle && isCarOutputActive(preferences)
 +  }
 +
    func configure(
      player: AudioPlayer,
      chapters: ChapterPickerSheet.Model?,
-@@ -86,6 +110,11 @@ final class NowPlayingManager {
+@@ -86,6 +127,11 @@ final class NowPlayingManager {
      observeChapterChanges()
      observePreferenceChanges()
  
@@ -98,16 +136,17 @@ index c40ca7c..e5c77c8 100644
      player.events
        .sink { [weak self] event in
          switch event {
-@@ -122,6 +151,8 @@ final class NowPlayingManager {
+@@ -122,6 +168,9 @@ final class NowPlayingManager {
    private func observePreferenceChanges() {
      withObservationTracking {
        _ = preferences.showFullBookDuration
 +      _ = preferences.bluetoothUsesFullBookTimeline
 +      _ = preferences.bluetoothHidesRemainingInTitle
++      _ = preferences.bluetoothCarDeviceName
        _ = preferences.lockScreenImmersiveCover
        _ = preferences.lockScreenShowRemainingInTitle
        _ = preferences.timeRemainingAdjustsWithSpeed
-@@ -153,7 +184,7 @@ final class NowPlayingManager {
+@@ -153,7 +202,7 @@ final class NowPlayingManager {
      info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = player.rate
      info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? player.rate : 0.0
  
@@ -116,7 +155,7 @@ index c40ca7c..e5c77c8 100644
        chapters.chapters.count > 1
      {
        info[MPMediaItemPropertyTitle] = decoratedTitle(current.title)
-@@ -178,7 +209,9 @@ final class NowPlayingManager {
+@@ -178,7 +227,9 @@ final class NowPlayingManager {
    }
  
    private func decoratedTitle(_ base: String) -> String {
@@ -141,10 +180,10 @@ index 40c3365..3613fb7 100644
        } else {
          let offset = current.chapters?.current?.start ?? 0
 diff --git a/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift b/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift
-index 932f2cc..ba77014 100644
+index 932f2cc..69a1586 100644
 --- a/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift
 +++ b/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift
-@@ -82,6 +82,12 @@ final class UserPreferences: ObservableObject {
+@@ -82,6 +82,15 @@ final class UserPreferences: ObservableObject {
    @AppStorage("lockScreenShowRemainingInTitle")
    var lockScreenShowRemainingInTitle: Bool = false
  
@@ -153,6 +192,9 @@ index 932f2cc..ba77014 100644
 +
 +  @AppStorage("bluetoothHidesRemainingInTitle")
 +  var bluetoothHidesRemainingInTitle: Bool = false
++
++  @AppStorage("bluetoothCarDeviceName")
++  var bluetoothCarDeviceName: String = ""
 +
    @AppStorage("timeRemainingAdjustsWithSpeed")
    var timeRemainingAdjustsWithSpeed: Bool = true
