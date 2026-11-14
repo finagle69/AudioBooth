@@ -1,0 +1,159 @@
+diff --git a/AudioBooth/AudioBooth/Screens/BookPlayer/BookPlayerModel.swift b/AudioBooth/AudioBooth/Screens/BookPlayer/BookPlayerModel.swift
+index 8080ce1..f6a36fe 100644
+--- a/AudioBooth/AudioBooth/Screens/BookPlayer/BookPlayerModel.swift
++++ b/AudioBooth/AudioBooth/Screens/BookPlayer/BookPlayerModel.swift
+@@ -1189,7 +1189,9 @@ extension BookPlayerModel {
+       self.checkAutoDownloadAfterListening()
+       self.dismissPositionSyncIfListeningOn(at: globalTime)
+ 
+-      if UserPreferences.shared.lockScreenShowRemainingInTitle {
++      if UserPreferences.shared.lockScreenShowRemainingInTitle,
++        !NowPlayingManager.hidesRemainingInTitle()
++      {
+         self.nowPlaying.update()
+       }
+     }
+diff --git a/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift b/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift
+index 5b618a4..fe5df43 100644
+--- a/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift
++++ b/AudioBooth/AudioBooth/Screens/Settings/Preferences/Player/LockScreen/LockScreenPreferencesView.swift
+@@ -53,6 +53,33 @@ struct LockScreenPreferencesView: View {
+         Text("Appearance")
+       }
+ 
++      Section {
++        Toggle(isOn: $preferences.bluetoothUsesFullBookTimeline) {
++          PreferenceRow(
++            systemImage: "car.fill",
++            tint: .teal,
++            title: "Full Book Timeline on Bluetooth",
++            subtitle: "Car and Bluetooth displays show whole-book time. Lock screen is unchanged."
++          )
++        }
++        .listRowBackground(theme.colors.background.card)
++
++        Toggle(isOn: $preferences.bluetoothHidesRemainingInTitle) {
++          PreferenceRow(
++            systemImage: "clock.badge.xmark",
++            tint: .red,
++            title: "Hide Remaining on Bluetooth",
++            subtitle: "Keep the title steady in the car instead of updating as time counts down"
++          )
++        }
++        .listRowBackground(theme.colors.background.card)
++      } header: {
++        Text("Bluetooth / Car")
++      } footer: {
++        Text("Applies to any connected Bluetooth audio device, including headphones.")
++          .font(.caption)
++      }
++
+       Section {
+         Toggle(isOn: $preferences.lockScreenAllowPlaybackPositionChange) {
+           PreferenceRow(
+diff --git a/AudioBooth/AudioBooth/Services/NowPlayingManager.swift b/AudioBooth/AudioBooth/Services/NowPlayingManager.swift
+index c40ca7c..e5c77c8 100644
+--- a/AudioBooth/AudioBooth/Services/NowPlayingManager.swift
++++ b/AudioBooth/AudioBooth/Services/NowPlayingManager.swift
+@@ -74,6 +74,30 @@ final class NowPlayingManager {
+     }
+   }
+ 
++  /// True when the current audio output is a Bluetooth device (car stereo, headphones, speaker).
++  static var isBluetoothOutputActive: Bool {
++    AVAudioSession.sharedInstance().currentRoute.outputs.contains { output in
++      switch output.portType {
++      case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE:
++        return true
++      default:
++        return false
++      }
++    }
++  }
++
++  /// Whether the system Now Playing info (lock screen, Control Center, Bluetooth/car displays)
++  /// should describe the whole book rather than the current chapter.
++  static func publishesFullBookTimeline(_ preferences: UserPreferences = .shared) -> Bool {
++    if preferences.showFullBookDuration { return true }
++    return preferences.bluetoothUsesFullBookTimeline && isBluetoothOutputActive
++  }
++
++  /// Whether the "time remaining" suffix should be left off the Now Playing title.
++  static func hidesRemainingInTitle(_ preferences: UserPreferences = .shared) -> Bool {
++    preferences.bluetoothHidesRemainingInTitle && isBluetoothOutputActive
++  }
++
+   func configure(
+     player: AudioPlayer,
+     chapters: ChapterPickerSheet.Model?,
+@@ -86,6 +110,11 @@ final class NowPlayingManager {
+     observeChapterChanges()
+     observePreferenceChanges()
+ 
++    NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
++      .receive(on: RunLoop.main)
++      .sink { [weak self] _ in self?.update() }
++      .store(in: &cancellables)
++
+     player.events
+       .sink { [weak self] event in
+         switch event {
+@@ -122,6 +151,8 @@ final class NowPlayingManager {
+   private func observePreferenceChanges() {
+     withObservationTracking {
+       _ = preferences.showFullBookDuration
++      _ = preferences.bluetoothUsesFullBookTimeline
++      _ = preferences.bluetoothHidesRemainingInTitle
+       _ = preferences.lockScreenImmersiveCover
+       _ = preferences.lockScreenShowRemainingInTitle
+       _ = preferences.timeRemainingAdjustsWithSpeed
+@@ -153,7 +184,7 @@ final class NowPlayingManager {
+     info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = player.rate
+     info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? player.rate : 0.0
+ 
+-    if !preferences.showFullBookDuration, let chapters, let current = chapters.current,
++    if !Self.publishesFullBookTimeline(preferences), let chapters, let current = chapters.current,
+       chapters.chapters.count > 1
+     {
+       info[MPMediaItemPropertyTitle] = decoratedTitle(current.title)
+@@ -178,7 +209,9 @@ final class NowPlayingManager {
+   }
+ 
+   private func decoratedTitle(_ base: String) -> String {
+-    guard preferences.lockScreenShowRemainingInTitle, let mediaProgress else { return base }
++    guard preferences.lockScreenShowRemainingInTitle, !Self.hidesRemainingInTitle(preferences),
++      let mediaProgress
++    else { return base }
+ 
+     var remaining = mediaProgress.duration - mediaProgress.currentTime
+     guard remaining > 0 else { return base }
+diff --git a/AudioBooth/AudioBooth/Services/PlayerManager.swift b/AudioBooth/AudioBooth/Services/PlayerManager.swift
+index 40c3365..3613fb7 100644
+--- a/AudioBooth/AudioBooth/Services/PlayerManager.swift
++++ b/AudioBooth/AudioBooth/Services/PlayerManager.swift
+@@ -508,7 +508,7 @@ extension PlayerManager {
+         return .commandFailed
+       }
+ 
+-      if userPreferences.showFullBookDuration {
++      if NowPlayingManager.publishesFullBookTimeline(userPreferences) {
+         current.seekToTime(positionEvent.positionTime)
+       } else {
+         let offset = current.chapters?.current?.start ?? 0
+diff --git a/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift b/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift
+index 932f2cc..ba77014 100644
+--- a/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift
++++ b/AudioBooth/AudioBooth/Services/UserPreferences/UserPreferences.swift
+@@ -82,6 +82,12 @@ final class UserPreferences: ObservableObject {
+   @AppStorage("lockScreenShowRemainingInTitle")
+   var lockScreenShowRemainingInTitle: Bool = false
+ 
++  @AppStorage("bluetoothUsesFullBookTimeline")
++  var bluetoothUsesFullBookTimeline: Bool = false
++
++  @AppStorage("bluetoothHidesRemainingInTitle")
++  var bluetoothHidesRemainingInTitle: Bool = false
++
+   @AppStorage("timeRemainingAdjustsWithSpeed")
+   var timeRemainingAdjustsWithSpeed: Bool = true
+ 
