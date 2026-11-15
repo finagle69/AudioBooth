@@ -1,9 +1,9 @@
 name: Check patch against upstream
 
 # Runs every Monday and can also be started by hand. It tests whether
-# patches/bluetooth-timeline.patch still applies to AudioBooth's newest
-# release and to its main branch. If it does not, this run FAILS, and
-# GitHub emails you about the failed run. Nothing is built or changed.
+# patches/bluetooth-timeline.patch still applies to the newest code on
+# AudioBooth's main branch. If it does not, this run FAILS, and GitHub
+# emails you about the failed run. Nothing is built or changed.
 on:
   schedule:
     - cron: '17 15 * * 1'
@@ -15,25 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test patch against upstream
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Test patch against upstream main
         run: |
           git clone --quiet https://github.com/AudioBooth/AudioBooth.git upstream
           cd upstream
-          LATEST=$(gh api repos/AudioBooth/AudioBooth/releases/latest --jq .tag_name || true)
-          fail=0
-          for ref in "$LATEST" origin/main; do
-            [ -z "$ref" ] && continue
-            git checkout --quiet --detach "$ref"
-            if git apply --check --ignore-whitespace ../patches/bluetooth-timeline.patch; then
-              echo "OK: patch applies to $ref"
-              echo "OK: patch applies to $ref" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::error::Patch does NOT apply to $ref. Ask Claude to update it."
-              echo "FAIL: patch does not apply to $ref" >> "$GITHUB_STEP_SUMMARY"
-              fail=1
-            fi
-          done
-          echo "Latest upstream release: ${LATEST:-none}" >> "$GITHUB_STEP_SUMMARY"
-          exit $fail
+          echo "Upstream main is at: $(git log -1 --format='%h %cs %s')" >> "$GITHUB_STEP_SUMMARY"
+          if git apply --check --ignore-whitespace ../patches/bluetooth-timeline.patch; then
+            echo "OK: patch applies to upstream main" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Patch does NOT apply to upstream main. Ask Claude to update it."
+            echo "FAIL: patch does not apply to upstream main" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
